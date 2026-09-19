@@ -206,6 +206,8 @@ async function readPersistedState(): Promise<Record<string, unknown>> {
 /** Full server response shape */
 interface MockServerResponse {
   providers?: Record<string, { models?: string[]; baseUrl?: string }>;
+  llmPolicy?: { locked?: boolean; providerId?: string; modelId?: string };
+  audioPolicy?: { locked?: boolean; ttsProviderId?: string; asrProviderId?: string };
   tts?: Record<string, { baseUrl?: string; disabled?: boolean }>;
   asr?: Record<string, { baseUrl?: string; disabled?: boolean }>;
   pdf?: Record<string, { baseUrl?: string }>;
@@ -694,6 +696,57 @@ describe('fetchServerProviders — provider availability sync', () => {
 
     expect(store.getState().providerId).toBe('deepseek');
     expect(store.getState().modelId).toBe('deepseek-chat');
+  });
+
+  it('keeps an LLM hard lock after sync and rejects later client reselection', async () => {
+    const store = await getStore();
+    store.getState().setProviderConfig('deepseek', { apiKey: 'client-key' });
+    mockServerResponse({
+      providers: { openai: { models: ['gpt-4o'] } },
+      llmPolicy: { locked: true, providerId: 'openai', modelId: 'gpt-4o' },
+    });
+
+    await store.getState().fetchServerProviders();
+    expect(store.getState().serverLLMPolicy).toMatchObject({
+      locked: true,
+      providerId: 'openai',
+      modelId: 'gpt-4o',
+    });
+    expect(store.getState().providerId).toBe('openai');
+    expect(store.getState().modelId).toBe('gpt-4o');
+
+    store.getState().setModel('deepseek', 'deepseek-chat');
+    expect(store.getState().providerId).toBe('openai');
+    expect(store.getState().modelId).toBe('gpt-4o');
+  });
+
+  it('keeps speech hard locks after sync and rejects later client reselection', async () => {
+    const store = await getStore();
+    store.getState().setTTSProviderConfig('openai-tts', { apiKey: 'client-key' });
+    store.getState().setASRProviderConfig('openai-whisper', { apiKey: 'client-key' });
+    mockServerResponse({
+      tts: { 'azure-tts': {} },
+      asr: { 'browser-native': {} },
+      audioPolicy: {
+        locked: true,
+        ttsProviderId: 'azure-tts',
+        asrProviderId: 'browser-native',
+      },
+    });
+
+    await store.getState().fetchServerProviders();
+    expect(store.getState().serverAudioPolicy).toMatchObject({
+      locked: true,
+      ttsProviderId: 'azure-tts',
+      asrProviderId: 'browser-native',
+    });
+    expect(store.getState().ttsProviderId).toBe('azure-tts');
+    expect(store.getState().asrProviderId).toBe('browser-native');
+
+    store.getState().setTTSProvider('openai-tts');
+    store.getState().setASRProvider('openai-whisper');
+    expect(store.getState().ttsProviderId).toBe('azure-tts');
+    expect(store.getState().asrProviderId).toBe('browser-native');
   });
 
   // ---- Error handling ----

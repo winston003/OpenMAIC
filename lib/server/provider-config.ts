@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { createLogger } from '@/lib/logger';
+import { getPersistedProviderPolicy } from '@/lib/server/persisted-provider-policy';
 import {
   DEFAULT_QWEN_TTS_VOICE_CLONE_MODEL,
   isQwenCatalogVoice,
@@ -628,6 +629,34 @@ function resolveSectionBaseUrl(
 // Public API — LLM
 // ---------------------------------------------------------------------------
 
+export interface ServerLLMPolicy {
+  locked: boolean;
+  providerId?: string;
+  modelId?: string;
+}
+
+/** Environment-only fallback used when durable provider-policy storage is unavailable. */
+export function getServerLLMPolicy(): ServerLLMPolicy {
+  const providerId = process.env.OPENMAIC_LLM_ONLY_PROVIDER?.trim();
+  const modelId = process.env.OPENMAIC_LLM_ONLY_MODEL?.trim();
+  return providerId && modelId ? { locked: true, providerId, modelId } : { locked: false };
+}
+
+/** Persisted policy is authoritative; env remains the bootstrap/fallback path. */
+export async function getEffectiveServerLLMPolicy(): Promise<ServerLLMPolicy> {
+  const persisted = await getPersistedProviderPolicy();
+  if (persisted) {
+    return persisted.llmLocked
+      ? {
+          locked: true,
+          providerId: persisted.llmProviderId ?? undefined,
+          modelId: persisted.llmModelId ?? undefined,
+        }
+      : { locked: false };
+  }
+  return getServerLLMPolicy();
+}
+
 /**
  * Returns server-configured LLM providers. Exposes only the allowed model list
  * and the "managed" flag (presence in this map) — never the API key or the
@@ -641,6 +670,17 @@ export function getServerProviders(): Record<string, { models?: string[] }> {
     if (entry.models && entry.models.length > 0) result[id].models = entry.models;
   }
   return result;
+}
+
+/** Provider listing filtered through the effective hard lock for browser consumers. */
+export async function getEffectiveServerProviders(): Promise<
+  Record<string, { models?: string[] }>
+> {
+  const providers = getServerProviders();
+  const policy = await getEffectiveServerLLMPolicy();
+  if (!policy.locked) return providers;
+  if (!policy.providerId || !policy.modelId || !providers[policy.providerId]) return {};
+  return { [policy.providerId]: { models: [policy.modelId] } };
 }
 
 /** Resolve API key. Managed provider ⇒ server key; otherwise client key. */

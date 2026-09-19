@@ -12,7 +12,7 @@ import { persist } from 'zustand/middleware';
 import type { ProviderId } from '@/lib/ai/providers';
 import type { ProvidersConfig } from '@/lib/types/settings';
 import { PROVIDERS } from '@/lib/ai/providers';
-import { findModelById, getCanonicalModelId } from '@/lib/ai/model-aliases';
+import { findModelById, getCanonicalModelId, modelIdsMatch } from '@/lib/ai/model-aliases';
 import type { ThinkingConfig } from '@/lib/types/provider';
 import { getThinkingConfigKey, supportsConfigurableThinking } from '@/lib/ai/thinking-config';
 import type { TTSProviderId, ASRProviderId, BuiltInTTSProviderId } from '@/lib/audio/types';
@@ -243,6 +243,16 @@ export interface SettingsState {
   // Server-configured opt-in parallel scene-content concurrency (#572).
   // 0 = off (serial generation); populated by fetchServerProviders.
   parallelSceneConcurrency: number;
+
+  // Effective server-owned provider boundaries. These are kept as explicit
+  // state so a lock remains an invariant after the initial server sync instead
+  // of being a one-time rewrite of the current selection.
+  serverLLMPolicy: { locked: boolean; providerId?: ProviderId; modelId?: string };
+  serverAudioPolicy: {
+    locked: boolean;
+    ttsProviderId?: TTSProviderId;
+    asrProviderId?: ASRProviderId;
+  };
 
   // Auto-config lifecycle flag (persisted)
   autoConfigApplied: boolean;
@@ -990,6 +1000,8 @@ export const useSettingsStore = create<SettingsState>()(
 
         // Off until the server reports a concurrency via fetchServerProviders.
         parallelSceneConcurrency: 0,
+        serverLLMPolicy: { locked: false },
+        serverAudioPolicy: { locked: false },
 
         autoConfigApplied: false,
 
@@ -997,7 +1009,14 @@ export const useSettingsStore = create<SettingsState>()(
         ...defaultWebSearchConfig,
 
         // Actions
-        setModel: (providerId, modelId) => set({ providerId, modelId }),
+        setModel: (providerId, modelId) =>
+          set((state) => {
+            const policy = state.serverLLMPolicy;
+            if (policy.locked && policy.providerId && policy.modelId) {
+              return { providerId: policy.providerId, modelId: policy.modelId };
+            }
+            return { providerId, modelId };
+          }),
 
         setThinkingConfig: (providerId, modelId, config) =>
           set((state) => {
@@ -1026,11 +1045,11 @@ export const useSettingsStore = create<SettingsState>()(
             // to another usable provider or State A), or change its model list
             // (re-pick the model). All handled atomically here, never leaving
             // an invalid/stale (provider, model) selected.
-            const { providerId: nextProvider, modelId: nextModel } = resolveLLMSelection(
-              providersConfig,
-              state.providerId,
-              state.modelId,
-            );
+            const resolved = resolveLLMSelection(providersConfig, state.providerId, state.modelId);
+            const locked = state.serverLLMPolicy;
+            const nextProvider =
+              locked.locked && locked.providerId ? locked.providerId : resolved.providerId;
+            const nextModel = locked.locked && locked.modelId ? locked.modelId : resolved.modelId;
             return {
               providersConfig,
               thinkingConfigs: pruneThinkingConfigs(state.thinkingConfigs, providersConfig),
@@ -1044,11 +1063,11 @@ export const useSettingsStore = create<SettingsState>()(
             // Bulk config replace (delete provider/model, import, reset): same
             // shared resolver as setProviderConfig so the two paths can never
             // diverge — never leave the deleted/invalid provider selected.
-            const { providerId: nextProvider, modelId: nextModel } = resolveLLMSelection(
-              config,
-              state.providerId,
-              state.modelId,
-            );
+            const resolved = resolveLLMSelection(config, state.providerId, state.modelId);
+            const locked = state.serverLLMPolicy;
+            const nextProvider =
+              locked.locked && locked.providerId ? locked.providerId : resolved.providerId;
+            const nextModel = locked.locked && locked.modelId ? locked.modelId : resolved.modelId;
             return {
               providersConfig: config,
               thinkingConfigs: pruneThinkingConfigs(state.thinkingConfigs, config),
@@ -1093,15 +1112,19 @@ export const useSettingsStore = create<SettingsState>()(
         // Audio actions
         setTTSProvider: (providerId) =>
           set((state) => {
-            // If switching provider, set default voice for that provider
-            const shouldUpdateVoice = state.ttsProviderId !== providerId;
-            const defaultVoice = isCustomTTSProvider(providerId)
-              ? state.ttsProvidersConfig[providerId]?.customVoices?.[0]?.id || 'default'
-              : DEFAULT_TTS_VOICES[providerId as BuiltInTTSProviderId] || 'default';
+            const effectiveProviderId =
+              state.serverAudioPolicy.locked && state.serverAudioPolicy.ttsProviderId
+                ? state.serverAudioPolicy.ttsProviderId
+                : providerId;
+            // If switching provider, set default voice for that provider.
+            const shouldUpdateVoice = state.ttsProviderId !== effectiveProviderId;
+            const defaultVoice = isCustomTTSProvider(effectiveProviderId)
+              ? state.ttsProvidersConfig[effectiveProviderId]?.customVoices?.[0]?.id || 'default'
+              : DEFAULT_TTS_VOICES[effectiveProviderId as BuiltInTTSProviderId] || 'default';
             return {
-              ttsProviderId: providerId,
+              ttsProviderId: effectiveProviderId,
               ...(shouldUpdateVoice && { ttsVoice: defaultVoice }),
-              ...(providerId === 'qwen-tts' &&
+              ...(effectiveProviderId === 'qwen-tts' &&
               isQwenCatalogVoice(defaultVoice) &&
               isQwenVoiceCloneModel(state.ttsProvidersConfig['qwen-tts']?.modelId)
                 ? {
@@ -1140,10 +1163,16 @@ export const useSettingsStore = create<SettingsState>()(
         // Reset language when switching providers, since language code formats differ
         // (e.g. browser-native uses BCP-47 "en-US", OpenAI Whisper uses ISO 639-1 "en")
         setASRProvider: (providerId) =>
-          set((state) => ({
-            asrProviderId: providerId,
-            asrLanguage: getValidASRLanguage(providerId, state.asrLanguage),
-          })),
+          set((state) => {
+            const effectiveProviderId =
+              state.serverAudioPolicy.locked && state.serverAudioPolicy.asrProviderId
+                ? state.serverAudioPolicy.asrProviderId
+                : providerId;
+            return {
+              asrProviderId: effectiveProviderId,
+              asrLanguage: getValidASRLanguage(effectiveProviderId, state.asrLanguage),
+            };
+          }),
 
         setASRLanguage: (language) => set({ asrLanguage: language }),
 
@@ -1491,6 +1520,8 @@ export const useSettingsStore = create<SettingsState>()(
             // admin/server-level force-off (#665).
             const data = (await res.json()) as {
               providers: Record<string, { models?: string[] }>;
+              llmPolicy?: { locked?: boolean; providerId?: string; modelId?: string };
+              audioPolicy?: { locked?: boolean; ttsProviderId?: string; asrProviderId?: string };
               tts: Record<string, { disabled?: boolean }>;
               asr: Record<string, { disabled?: boolean }>;
               pdf: Record<string, Record<string, never>>;
@@ -1741,13 +1772,13 @@ export const useSettingsStore = create<SettingsState>()(
                 newProvidersConfig,
                 llmFallback,
               );
-              const validTTSProvider = validateProvider(
+              let validTTSProvider = validateProvider(
                 state.ttsProviderId,
                 newTTSConfig,
                 ttsFallback,
                 'browser-native-tts' as TTSProviderId,
               );
-              const validASRProvider = validateProvider(
+              let validASRProvider = validateProvider(
                 state.asrProviderId,
                 newASRConfig,
                 asrFallback,
@@ -1783,6 +1814,43 @@ export const useSettingsStore = create<SettingsState>()(
               if (!validLLMProvider && llmFallback.length > 0) {
                 validLLMProvider = llmFallback[0];
               }
+
+              const serverLLMPolicy = {
+                locked: data.llmPolicy?.locked === true,
+                providerId: data.llmPolicy?.providerId as ProviderId | undefined,
+                modelId: data.llmPolicy?.modelId,
+              };
+              const serverAudioPolicy = {
+                locked: data.audioPolicy?.locked === true,
+                ttsProviderId: data.audioPolicy?.ttsProviderId as TTSProviderId | undefined,
+                asrProviderId: data.audioPolicy?.asrProviderId as ASRProviderId | undefined,
+              };
+              if (
+                serverLLMPolicy.locked &&
+                serverLLMPolicy.providerId &&
+                serverLLMPolicy.modelId &&
+                newProvidersConfig[serverLLMPolicy.providerId]?.models.some((model) =>
+                  modelIdsMatch(serverLLMPolicy.providerId!, model.id, serverLLMPolicy.modelId!),
+                )
+              ) {
+                validLLMProvider = serverLLMPolicy.providerId;
+              }
+              if (
+                serverAudioPolicy.locked &&
+                serverAudioPolicy.ttsProviderId &&
+                newTTSConfig[serverAudioPolicy.ttsProviderId] &&
+                !newTTSConfig[serverAudioPolicy.ttsProviderId].serverDisabled
+              ) {
+                validTTSProvider = serverAudioPolicy.ttsProviderId;
+              }
+              if (
+                serverAudioPolicy.locked &&
+                serverAudioPolicy.asrProviderId &&
+                newASRConfig[serverAudioPolicy.asrProviderId] &&
+                !newASRConfig[serverAudioPolicy.asrProviderId].serverDisabled
+              ) {
+                validASRProvider = serverAudioPolicy.asrProviderId;
+              }
               if (!validImageProvider && imageFallback.length > 0) {
                 validImageProvider = imageFallback[0];
               }
@@ -1797,7 +1865,15 @@ export const useSettingsStore = create<SettingsState>()(
                 ? (newProvidersConfig[validLLMProvider as ProviderId]?.models ?? [])
                 : [];
               const validLLMModel = validLLMProvider
-                ? resolveSelectedLLMModel(validLLMProvider as ProviderId, state.modelId, llmModels)
+                ? serverLLMPolicy.locked &&
+                  serverLLMPolicy.providerId === validLLMProvider &&
+                  serverLLMPolicy.modelId
+                  ? serverLLMPolicy.modelId
+                  : resolveSelectedLLMModel(
+                      validLLMProvider as ProviderId,
+                      state.modelId,
+                      llmModels,
+                    )
                 : '';
               const imageModels = validImageProvider
                 ? resolveMediaModels(
@@ -1943,6 +2019,8 @@ export const useSettingsStore = create<SettingsState>()(
                   0,
                   Math.floor(data.generation?.parallelSceneConcurrency ?? 0),
                 ),
+                serverLLMPolicy,
+                serverAudioPolicy,
                 autoConfigApplied: true,
                 // Validated selections
                 ...(validLLMProvider !== state.providerId && {
@@ -2009,6 +2087,29 @@ export const useSettingsStore = create<SettingsState>()(
                   videoGenerationEnabled: autoVideoEnabled,
                 }),
                 ...(autoTtsEnabled !== undefined && { ttsEnabled: autoTtsEnabled }),
+                // Hard locks are applied last so first-run auto-selection cannot
+                // overwrite the operator-owned boundary.
+                ...(serverLLMPolicy.locked &&
+                  serverLLMPolicy.providerId &&
+                  serverLLMPolicy.modelId && {
+                    providerId: serverLLMPolicy.providerId,
+                    modelId: serverLLMPolicy.modelId,
+                  }),
+                ...(serverAudioPolicy.locked &&
+                  serverAudioPolicy.ttsProviderId && {
+                    ttsProviderId: serverAudioPolicy.ttsProviderId,
+                    ttsVoice:
+                      DEFAULT_TTS_VOICES[serverAudioPolicy.ttsProviderId as BuiltInTTSProviderId] ||
+                      state.ttsVoice,
+                  }),
+                ...(serverAudioPolicy.locked &&
+                  serverAudioPolicy.asrProviderId && {
+                    asrProviderId: serverAudioPolicy.asrProviderId,
+                    asrLanguage: getValidASRLanguage(
+                      serverAudioPolicy.asrProviderId,
+                      state.asrLanguage,
+                    ),
+                  }),
               };
             });
           } catch (e) {

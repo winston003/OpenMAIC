@@ -7,10 +7,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/server/provider-config', () => ({
-  getServerTTSProviders: mocks.providers,
   resolveTTSApiKey: vi.fn(() => ''),
   resolveTTSBaseUrl: vi.fn(() => undefined),
   resolveTTSModel: vi.fn(() => ''),
+}));
+
+vi.mock('@/lib/server/audio-policy', () => ({
+  getEffectiveServerTTSProviderIds: vi.fn(async () =>
+    Object.entries(mocks.providers())
+      .filter(([, config]) => !(config as { disabled?: boolean }).disabled)
+      .map(([id]) => id),
+  ),
 }));
 
 vi.mock('@/lib/audio/tts-providers', () => ({ generateTTS: mocks.generate }));

@@ -1,15 +1,10 @@
 import { DEFAULT_TTS_MODELS, DEFAULT_TTS_VOICES, TTS_PROVIDERS } from '@/lib/audio/constants';
 import { generateTTS, TTSRequestTimeoutError } from '@/lib/audio/tts-providers';
 import type { TTSProviderId } from '@/lib/audio/types';
-import { BROWSER_NATIVE_TTS_PROVIDER_ID } from '@/lib/audio/provider-enablement';
 import type { LegacySpeechAction, SpeechAction } from '@/lib/types/action';
 import type { GeneratedAgentConfig, Scene } from '@/lib/types/stage';
-import {
-  getServerTTSProviders,
-  resolveTTSApiKey,
-  resolveTTSBaseUrl,
-  resolveTTSModel,
-} from '@/lib/server/provider-config';
+import { resolveTTSApiKey, resolveTTSBaseUrl, resolveTTSModel } from '@/lib/server/provider-config';
+import { getEffectiveServerTTSProviderIds } from '@/lib/server/audio-policy';
 import { persistClassroomMediaBytes } from '@/lib/server/classroom-media-bytes';
 
 export interface SceneTtsSummary {
@@ -27,12 +22,6 @@ export interface SceneTtsInput {
   signal?: AbortSignal;
 }
 
-function enabledProviderIds(): TTSProviderId[] {
-  return Object.entries(getServerTTSProviders())
-    .filter(([id, config]) => id !== BROWSER_NATIVE_TTS_PROVIDER_ID && !config.disabled)
-    .map(([id]) => id as TTSProviderId);
-}
-
 function narratorVoice(roster: SceneTtsInput['roster']) {
   return roster?.find((agent) => agent.role === 'teacher' && agent.voiceConfig)?.voiceConfig;
 }
@@ -43,7 +32,7 @@ function audioMime(format: string) {
 
 /** Server-configured narration synthesis into the stage's classroom-media path. */
 export async function synthesizeSceneNarration(input: SceneTtsInput): Promise<SceneTtsSummary> {
-  const enabled = enabledProviderIds();
+  const enabled = (await getEffectiveServerTTSProviderIds()) as TTSProviderId[];
   const bound = narratorVoice(input.roster);
   const providerId = (
     bound?.providerId && enabled.includes(bound.providerId as TTSProviderId)

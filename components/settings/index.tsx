@@ -212,6 +212,8 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
   const providerId = useSettingsStore((state) => state.providerId);
   const _modelId = useSettingsStore((state) => state.modelId);
   const providersConfig = useSettingsStore((state) => state.providersConfig);
+  const serverLLMPolicy = useSettingsStore((state) => state.serverLLMPolicy);
+  const serverAudioPolicy = useSettingsStore((state) => state.serverAudioPolicy);
   const pdfProviderId = useSettingsStore((state) => state.pdfProviderId);
   const pdfProvidersConfig = useSettingsStore((state) => state.pdfProvidersConfig);
   const webSearchProviderId = useSettingsStore((state) => state.webSearchProviderId);
@@ -538,17 +540,23 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     toast.success(t('settings.resetSuccess'));
   };
 
-  // Get all providers from providersConfig
-  const allProviders = Object.entries(providersConfig).map(([id, config]) => ({
-    id: id as ProviderId,
-    name: config.name,
-    type: config.type,
-    defaultBaseUrl: config.defaultBaseUrl,
-    icon: config.icon,
-    requiresApiKey: config.requiresApiKey,
-    models: config.models,
-    isServerConfigured: config.isServerConfigured,
-  }));
+  // A server hard lock is a UI invariant too: do not advertise selections
+  // that the request path is guaranteed to reject.
+  const allProviders = Object.entries(providersConfig)
+    .filter(([id]) => !serverLLMPolicy.locked || id === serverLLMPolicy.providerId)
+    .map(([id, config]) => ({
+      id: id as ProviderId,
+      name: config.name,
+      type: config.type,
+      defaultBaseUrl: config.defaultBaseUrl,
+      icon: config.icon,
+      requiresApiKey: config.requiresApiKey,
+      models:
+        serverLLMPolicy.locked && serverLLMPolicy.modelId
+          ? config.models.filter((model) => model.id === serverLLMPolicy.modelId)
+          : config.models,
+      isServerConfigured: config.isServerConfigured,
+    }));
 
   // Sections that show a provider list column
   const _hasProviderList = [
@@ -1001,13 +1009,24 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             <>
               <ProviderListColumn
                 providers={[
-                  ...Object.values(TTS_PROVIDERS).map((p) => ({
-                    id: p.id,
-                    name: getTTSProviderName(p.id, t),
-                    icon: p.icon,
-                  })),
+                  ...Object.values(TTS_PROVIDERS)
+                    .filter(
+                      (p) =>
+                        !serverAudioPolicy.locked ||
+                        !serverAudioPolicy.ttsProviderId ||
+                        p.id === serverAudioPolicy.ttsProviderId,
+                    )
+                    .map((p) => ({
+                      id: p.id,
+                      name: getTTSProviderName(p.id, t),
+                      icon: p.icon,
+                    })),
                   ...Object.entries(ttsProvidersConfig)
-                    .filter(([id]) => isCustomTTSProvider(id))
+                    .filter(
+                      ([id]) =>
+                        isCustomTTSProvider(id) &&
+                        (!serverAudioPolicy.locked || id === serverAudioPolicy.ttsProviderId),
+                    )
                     .map(([id, cfg]) => ({
                       id: id as TTSProviderId,
                       name: cfg.customName || id,
@@ -1034,13 +1053,24 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             <>
               <ProviderListColumn
                 providers={[
-                  ...Object.values(ASR_PROVIDERS).map((p) => ({
-                    id: p.id,
-                    name: getASRProviderName(p.id, t),
-                    icon: p.icon,
-                  })),
+                  ...Object.values(ASR_PROVIDERS)
+                    .filter(
+                      (p) =>
+                        !serverAudioPolicy.locked ||
+                        !serverAudioPolicy.asrProviderId ||
+                        p.id === serverAudioPolicy.asrProviderId,
+                    )
+                    .map((p) => ({
+                      id: p.id,
+                      name: getASRProviderName(p.id, t),
+                      icon: p.icon,
+                    })),
                   ...Object.entries(asrProvidersConfig)
-                    .filter(([id]) => isCustomASRProvider(id))
+                    .filter(
+                      ([id]) =>
+                        isCustomASRProvider(id) &&
+                        (!serverAudioPolicy.locked || id === serverAudioPolicy.asrProviderId),
+                    )
                     .map(([id, cfg]) => ({
                       id: id as ASRProviderId,
                       name: cfg.customName || id,

@@ -18,7 +18,6 @@ import { VIDEO_PROVIDERS } from '@/lib/media/video-providers';
 import {
   getServerImageProviders,
   getServerVideoProviders,
-  getServerTTSProviders,
   resolveImageApiKey,
   resolveImageBaseUrl,
   resolveImageModel,
@@ -38,6 +37,7 @@ import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { isGeneratedMediaPlaceholder } from '@/lib/media/media-ref';
 import { resolveImageSize } from '@/lib/server/image-sizing';
 import { VOXCPM_AUTO_VOICE_ID, VOXCPM_TTS_PROVIDER_ID } from '@/lib/audio/voxcpm';
+import { getEffectiveServerTTSProviderIds } from '@/lib/server/audio-policy';
 
 const log = createLogger('ClassroomMedia');
 
@@ -256,11 +256,9 @@ export async function generateTTSForClassroom(
   const audioDir = path.join(CLASSROOMS_DIR, classroomId, 'audio');
   await ensureDir(audioDir);
 
-  // Resolve TTS provider (exclude browser-native-tts and operator force-disabled
-  // providers — server precedence, #665).
-  const ttsProviderIds = Object.entries(getServerTTSProviders())
-    .filter(([id, info]) => id !== 'browser-native-tts' && !info.disabled)
-    .map(([id]) => id);
+  // Resolve TTS through the effective server policy so background generation
+  // cannot bypass a deployment hard lock enforced by the HTTP route.
+  const ttsProviderIds = await getEffectiveServerTTSProviderIds();
   if (ttsProviderIds.length === 0) {
     log.warn('No server TTS provider configured, skipping TTS generation');
     return;

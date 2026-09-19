@@ -7,12 +7,8 @@ import { basename, delimiter, extname, join, resolve as resolvePath } from 'node
 
 import { transcribeAudio, type ASRTranscriptionResult } from '@/lib/audio/asr-providers';
 import type { ASRModelConfig, ASRProviderId } from '@/lib/audio/types';
-import {
-  resolveASRApiKey,
-  resolveASRBaseUrl,
-  resolveASRModel,
-  resolveServerASRProviderId,
-} from '@/lib/server/provider-config';
+import { resolveASRApiKey, resolveASRBaseUrl, resolveASRModel } from '@/lib/server/provider-config';
+import { resolveEffectiveServerASRProviderId } from '@/lib/server/audio-policy';
 
 import { LOCAL_FFMPEG_MEDIA_MIMES } from '../mime';
 import type {
@@ -407,8 +403,8 @@ function derivedStem(originalName: string | null, fallback: string): string {
   return extension ? name.slice(0, -extension.length) : name;
 }
 
-function configuredASR(): ASRModelConfig {
-  const providerId = resolveServerASRProviderId();
+async function configuredASR(): Promise<ASRModelConfig> {
+  const providerId = await resolveEffectiveServerASRProviderId();
   if (!providerId) {
     throw new MaterialExtractionError(
       'No server ASR provider is configured for local media extraction',
@@ -663,7 +659,7 @@ export async function extractMediaMaterial(
         );
       }
       asrChunks = chunkPaths.length;
-      const asr = dependencies.resolveASRConfig?.() ?? configuredASR();
+      const asr = dependencies.resolveASRConfig?.() ?? (await configuredASR());
       segments = await deadline.beforeAwait(() =>
         transcribeChunks(chunkPaths, windows, asr, transcribe, deadline),
       );

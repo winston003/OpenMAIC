@@ -88,6 +88,7 @@ export function GenerationToolbar({
   const currentProviderId = useSettingsStore((s) => s.providerId);
   const currentModelId = useSettingsStore((s) => s.modelId);
   const providersConfig = useSettingsStore((s) => s.providersConfig);
+  const serverLLMPolicy = useSettingsStore((s) => s.serverLLMPolicy);
   const setModel = useSettingsStore((s) => s.setModel);
   const thinkingConfigs = useSettingsStore((s) => s.thinkingConfigs);
   const setThinkingConfig = useSettingsStore((s) => s.setThinkingConfig);
@@ -114,20 +115,29 @@ export function GenerationToolbar({
   // Configured LLM providers (only those with valid credentials + models + endpoint)
   const configuredProviders = providersConfig
     ? Object.entries(providersConfig)
-        .filter(([, config]) => isLLMProviderConfigured(config))
+        .filter(
+          ([id, config]) =>
+            isLLMProviderConfigured(config) &&
+            (!serverLLMPolicy.locked || id === serverLLMPolicy.providerId),
+        )
         .map(([id, config]) => ({
           id: id as ProviderId,
           name: config.name,
           icon: config.icon,
           isServerConfigured: config.isServerConfigured,
-          models:
-            config.isServerConfigured && !config.apiKey && config.serverModels?.length
-              ? config.models.filter((model) =>
-                  config.serverModels?.some((serverModelId) =>
-                    modelIdsMatch(id, model.id, serverModelId),
-                  ),
-                )
-              : config.models,
+          models: (config.isServerConfigured && !config.apiKey && config.serverModels?.length
+            ? config.models.filter((model) =>
+                config.serverModels?.some((serverModelId) =>
+                  modelIdsMatch(id, model.id, serverModelId),
+                ),
+              )
+            : config.models
+          ).filter(
+            (model) =>
+              !serverLLMPolicy.locked ||
+              !serverLLMPolicy.modelId ||
+              modelIdsMatch(id, model.id, serverLLMPolicy.modelId),
+          ),
         }))
     : [];
 

@@ -18,6 +18,7 @@ import { createLogger } from '@/lib/logger';
 import { isProviderKeyRequired } from '@/lib/ai/providers';
 import { resolveClassroomWebSearchConfig } from '@/lib/server/web-search-config';
 import { resolveModel } from '@/lib/server/resolve-model';
+import { getEffectiveServerLLMPolicy } from '@/lib/server/provider-config';
 import { getStageModel, type LlmStage } from '@/lib/server/model-routes';
 import type { LanguageModel } from 'ai';
 import type { ThinkingConfig } from '@/lib/types/provider';
@@ -329,6 +330,22 @@ export async function generateClassroom(
       stageModelCache.set(stage, entry);
       return entry;
     } catch (err) {
+      // In ordinary multi-provider mode stage routes remain optional overrides:
+      // preserve the established fallback contract. Under a hard LLM lock,
+      // however, falling back could cross the operator boundary, so fail closed.
+      const llmPolicy = await getEffectiveServerLLMPolicy();
+      if (llmPolicy.locked) {
+        log.error(
+          `Stage "${stage}" route "${getStageModel(stage)}" violated the active LLM policy.`,
+          err,
+        );
+        throw new Error(
+          `Configured model route for stage "${stage}" could not be resolved under the active provider policy: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { cause: err },
+        );
+      }
       log.warn(
         `Stage "${stage}" route "${getStageModel(stage)}" could not be resolved; ` +
           `falling back to the generate-classroom model.`,
