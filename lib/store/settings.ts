@@ -560,6 +560,7 @@ const getDefaultAudioConfig = () => ({
     'azure-asr': { apiKey: '', baseUrl: '', enabled: false },
     'funasr-asr': { apiKey: '', baseUrl: '', enabled: false },
     'lemonade-asr': { apiKey: '', baseUrl: '', enabled: false },
+    'doubao-asr': { apiKey: '', baseUrl: '', enabled: false },
   } as Record<ASRProviderId, { apiKey: string; baseUrl: string; enabled: boolean }>,
 });
 
