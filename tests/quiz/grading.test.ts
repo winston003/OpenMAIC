@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { gradeChoiceQuestions, isShortAnswer } from '@/lib/quiz/grading';
+import {
+  gradeChoiceQuestions,
+  hasAnswerValue,
+  hasUnscoredResults,
+  isShortAnswer,
+  isSkippedAnswer,
+  parseGradePayload,
+  SKIPPED_ANSWER,
+} from '@/lib/quiz/grading';
 import type { QuizQuestion } from '@/lib/types/stage';
 
 function q(overrides: Partial<QuizQuestion>): QuizQuestion {
@@ -50,6 +58,52 @@ describe('gradeChoiceQuestions', () => {
   it('honors custom point values', () => {
     const results = gradeChoiceQuestions([q({ points: 5 })], { q1: 'a' });
     expect(results[0].earned).toBe(5);
+  });
+
+  it('records an explicit skip without assigning a score', () => {
+    const results = gradeChoiceQuestions([q({})], { q1: SKIPPED_ANSWER });
+    expect(results[0]).toMatchObject({ correct: null, status: 'skipped', earned: null });
+  });
+});
+
+describe('answer and score invariants', () => {
+  it('treats whitespace-only input as unanswered while preserving explicit skips', () => {
+    expect(hasAnswerValue('   ')).toBe(false);
+    expect(hasAnswerValue('answer')).toBe(true);
+    expect(hasAnswerValue([])).toBe(false);
+    expect(hasAnswerValue(SKIPPED_ANSWER)).toBe(true);
+  });
+
+  it('suppresses aggregate scores when any result has no assigned score', () => {
+    expect(
+      hasUnscoredResults([
+        { questionId: 'q1', correct: true, status: 'correct', earned: 1 },
+        { questionId: 'q2', correct: null, status: 'pending_review', earned: null },
+      ]),
+    ).toBe(true);
+    expect(
+      hasUnscoredResults([{ questionId: 'q1', correct: true, status: 'correct', earned: 1 }]),
+    ).toBe(false);
+  });
+
+  it('accepts finite in-range fractional scores and rejects unverifiable payloads', () => {
+    expect(parseGradePayload({ score: 0.5, comment: 'partial' }, 1.5)).toEqual({
+      score: 0.5,
+      comment: 'partial',
+    });
+    expect(parseGradePayload({ score: '0.75', comment: 'partial' }, 1)).toEqual({
+      score: 0.75,
+      comment: 'partial',
+    });
+    expect(parseGradePayload({ score: 2, comment: 'too high' }, 1.5)).toBeNull();
+    expect(parseGradePayload({ score: 0.5, comment: '   ' }, 1.5)).toBeNull();
+  });
+});
+
+describe('isSkippedAnswer', () => {
+  it('recognizes the persisted skip sentinel', () => {
+    expect(isSkippedAnswer(SKIPPED_ANSWER)).toBe(true);
+    expect(isSkippedAnswer(['A'])).toBe(false);
   });
 });
 
